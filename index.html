@@ -1528,14 +1528,54 @@
       .slice(0, 40) || 'story';
   }
 
+  function normalizeStoryObject(obj, fallbackId){
+    const id = obj.id && typeof obj.id === 'string' ? obj.id : fallbackId;
+    const levels = obj.levels.map((lv, i) => ({
+      id: (typeof lv.id === 'number') ? lv.id : i + 1,
+      input: lv.input,
+      answer: lv.answer
+    }));
+    return { id, title: obj.title, description: obj.description || '', builtin: true, external: true, levels };
+  }
+
+  async function loadFolderStories(){
+    const loaded = [];
+    let indexList;
+    try {
+      const res = await fetch('stories/index.json', { cache: 'no-store' });
+      if (!res.ok) return loaded;
+      indexList = await res.json();
+      if (!Array.isArray(indexList)) return loaded;
+    } catch(e){
+      return loaded; // no stories/ folder, or not served over http(s) — silently skip
+    }
+    for (const fname of indexList){
+      if (typeof fname !== 'string') continue;
+      try {
+        const r = await fetch('stories/' + fname, { cache: 'no-store' });
+        if (!r.ok) { console.warn('Не удалось загрузить stories/' + fname, r.status); continue; }
+        const obj = await r.json();
+        const err = validateStoryJson(obj);
+        if (err) { console.warn('stories/' + fname + ': ' + err); continue; }
+        const fallbackId = 'file-' + slugify(fname.replace(/\.json$/i, ''));
+        loaded.push(normalizeStoryObject(obj, fallbackId));
+      } catch(e){
+        console.warn('Ошибка чтения stories/' + fname, e);
+      }
+    }
+    return loaded;
+  }
+
   async function ensureStoriesLoaded(){
     if (storiesLoaded) return;
+    const folderStories = await loadFolderStories();
+    const folderIds = new Set(folderStories.map(s => s.id));
     try {
       const raw = await storageGet('stories:imported');
-      const imported = raw ? JSON.parse(raw) : [];
-      stories = [BUILTIN_STORY, BUILTIN_STORY2, ...imported];
+      const imported = (raw ? JSON.parse(raw) : []).filter(s => !folderIds.has(s.id));
+      stories = [BUILTIN_STORY, BUILTIN_STORY2, ...folderStories, ...imported];
     } catch(e){
-      stories = [BUILTIN_STORY, BUILTIN_STORY2];
+      stories = [BUILTIN_STORY, BUILTIN_STORY2, ...folderStories];
     }
     try {
       const raw = await storageGet('stories:active');
@@ -1545,6 +1585,7 @@
     LEVELS = stories.find(s => s.id === activeStoryId).levels;
     storiesLoaded = true;
   }
+
 
   async function persistImportedStories(){
     const imported = stories.filter(s => !s.builtin);
@@ -1611,7 +1652,7 @@
       return;
     }
     let id = obj.id && typeof obj.id === 'string' ? obj.id : slugify(obj.title) + '-' + Date.now().toString(36);
-    if (id === BUILTIN_STORY.id || id === BUILTIN_STORY2.id){
+    if (stories.some(s => s.id === id && (s.builtin))){
       id = id + '-import-' + Date.now().toString(36);
     }
     const levels = obj.levels.map((lv, i) => ({
